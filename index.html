@@ -1,0 +1,898 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="theme-color" content="#1a2050">
+<title>🏓 Tênis de Mesa PRO!</title>
+<style>
+    * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+        -webkit-tap-highlight-color: transparent;
+        user-select: none;
+        -webkit-user-select: none;
+    }
+
+    html, body {
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+        background: #0a0e2a;
+        font-family: 'Arial Black', Arial, sans-serif;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        touch-action: none;
+    }
+
+    #gameContainer {
+        position: relative;
+        width: 100vw;
+        height: 100vh;
+        max-width: 1200px;
+        max-height: 100vh;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+    }
+
+    canvas {
+        display: block;
+        width: 100%;
+        height: 100%;
+        object-fit: contain;
+        background: #000;
+        cursor: crosshair;
+        touch-action: none;
+    }
+</style>
+</head>
+<body>
+<div id="gameContainer">
+    <canvas id="gameCanvas"></canvas>
+</div>
+
+<script>
+// ============================================================
+// 🏓 TÊNIS DE MESA PRO! - HTML5 Canvas Game
+// ============================================================
+
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+
+const LARGURA = 900;
+const ALTURA = 600;
+
+// ============ ESTADOS ============
+const Estado = {
+    CAPA: 'CAPA',
+    SELECAO_DIFICULDADE: 'SELECAO_DIFICULDADE',
+    JOGANDO: 'JOGANDO',
+    PAUSADO: 'PAUSADO',
+    FIM_DE_JOGO: 'FIM_DE_JOGO'
+};
+
+let estado = Estado.CAPA;
+
+// ============ NÍVEIS DE DIFICULDADE ============
+const DIFICULDADES = {
+    FACIL: {
+        nome: 'FÁCIL',
+        emoji: '🟢',
+        velocidadeCPU: 3.5,
+        erroCPU: 60,        // desvio em pixels (IA menos precisa)
+        velocidadeInicialBola: 4.5,
+        aceleracao: 0,
+        cor: '#22c55e',
+        descricao: 'Bom para aprender'
+    },
+    MEDIO: {
+        nome: 'MÉDIO',
+        emoji: '🟡',
+        velocidadeCPU: 5,
+        erroCPU: 25,
+        velocidadeInicialBola: 5.5,
+        aceleracao: 0.15,
+        cor: '#eab308',
+        descricao: 'Desafio equilibrado'
+    },
+    DIFICIL: {
+        nome: 'DIFÍCIL',
+        emoji: '🔴',
+        velocidadeCPU: 7,
+        erroCPU: 8,
+        velocidadeInicialBola: 6.5,
+        aceleracao: 0.35,
+        cor: '#ef4444',
+        descricao: 'Só para experts!'
+    }
+};
+
+let dificuldadeAtual = DIFICULDADES.MEDIO;
+
+// Botões do menu de dificuldade
+const botoesDificuldade = [
+    { nivel: 'FACIL',   x: LARGURA / 2 - 340, y: 300, w: 200, h: 160 },
+    { nivel: 'MEDIO',   x: LARGURA / 2 - 100, y: 300, w: 200, h: 160 },
+    { nivel: 'DIFICIL', x: LARGURA / 2 + 140, y: 300, w: 200, h: 160 }
+];
+
+// ============ CONFIGURAÇÕES ============
+const RAQUETE_LARGURA = 15;
+const RAQUETE_ALTURA = 100;
+const RAQUETE_JOGADOR_X = LARGURA - 35;
+const RAQUETE_CPU_X = 20;
+const BOLA_TAMANHO = 20;
+const PONTOS_PARA_VENCER = 5;
+
+let raqueteJogadorY = ALTURA / 2 - RAQUETE_ALTURA / 2;
+let raqueteCPUY = ALTURA / 2 - RAQUETE_ALTURA / 2;
+
+let bolaX = LARGURA / 2;
+let bolaY = ALTURA / 2;
+let velocidadeBolaX = 5;
+let velocidadeBolaY = 3;
+let velocidadeBase = 5; // guarda a velocidade base atual
+
+let pontosJogador = 0;
+let pontosCPU = 0;
+
+// Erro da CPU (para simular imperfeição)
+let alvoCPUY = ALTURA / 2;
+
+const COR_BRASIL = '#009c3b';
+const COR_MEXICO = '#006847';
+const COR_AMARELO = '#ffd600';
+
+// Botão INICIAR da capa
+const botaoIniciar = {
+    x: LARGURA / 2 - 160,
+    y: ALTURA / 2 + 30,
+    w: 320,
+    h: 90
+};
+
+// Imagem da capa
+const imagemCapa = new Image();
+let capaCarregada = false;
+imagemCapa.onload = () => { capaCarregada = true; };
+imagemCapa.onerror = () => { capaCarregada = false; };
+imagemCapa.src = 'capa.png';
+
+// ============================================================
+// 🔊 SISTEMA DE ÁUDIO (Web Audio API - sem arquivos externos!)
+// ============================================================
+class GerenciadorAudio {
+    constructor() {
+        this.ctxAudio = null;
+        this.habilitado = true;
+        this.masterVolume = 0.3;
+    }
+
+    // Inicializa o contexto (precisa de gesto do usuário no mobile)
+    init() {
+        if (this.ctxAudio) return;
+        try {
+            this.ctxAudio = new (window.AudioContext || window.webkitAudioContext)();
+        } catch (e) {
+            console.warn('⚠️ Web Audio não suportado');
+            this.habilitado = false;
+        }
+    }
+
+    // Toca uma nota simples
+    tocarNota(frequencia, duracao, tipoOnda = 'sine', volume = 1) {
+        if (!this.habilitado || !this.ctxAudio) return;
+
+        // Retoma contexto se suspenso (mobile)
+        if (this.ctxAudio.state === 'suspended') {
+            this.ctxAudio.resume();
+        }
+
+        const agora = this.ctxAudio.currentTime;
+        const osc = this.ctxAudio.createOscillator();
+        const gain = this.ctxAudio.createGain();
+
+        osc.type = tipoOnda;
+        osc.frequency.setValueAtTime(frequencia, agora);
+
+        // Envelope para evitar cliques
+        const vol = volume * this.masterVolume;
+        gain.gain.setValueAtTime(0, agora);
+        gain.gain.linearRampToValueAtTime(vol, agora + 0.01);
+        gain.gain.exponentialRampToValueAtTime(0.001, agora + duracao);
+
+        osc.connect(gain);
+        gain.connect(this.ctxAudio.destination);
+        osc.start(agora);
+        osc.stop(agora + duracao);
+    }
+
+    // Rebatida na raquete — "poc"
+    rebater() {
+        this.tocarNota(680, 0.08, 'square', 0.7);
+        setTimeout(() => this.tocarNota(420, 0.06, 'square', 0.4), 15);
+    }
+
+    // Bateu na parede (topo/base)
+    parede() {
+        this.tocarNota(300, 0.06, 'triangle', 0.5);
+    }
+
+    // Ponto marcado (jogador fez ponto)
+    pontoJogador() {
+        this.tocarNota(523.25, 0.1, 'sine', 0.6);  // C5
+        setTimeout(() => this.tocarNota(659.25, 0.1, 'sine', 0.6), 90);  // E5
+        setTimeout(() => this.tocarNota(783.99, 0.15, 'sine', 0.6), 180); // G5
+    }
+
+    // Ponto marcado (CPU fez ponto)
+    pontoCPU() {
+        this.tocarNota(392, 0.12, 'sawtooth', 0.5);   // G4
+        setTimeout(() => this.tocarNota(311.13, 0.18, 'sawtooth', 0.5), 120); // Eb4
+    }
+
+    // Vitória
+    vitoria() {
+        const notas = [523.25, 659.25, 783.99, 1046.50]; // C5 E5 G5 C6
+        notas.forEach((freq, i) => {
+            setTimeout(() => this.tocarNota(freq, 0.25, 'sine', 0.7), i * 130);
+        });
+    }
+
+    // Derrota
+    derrota() {
+        const notas = [392, 349.23, 311.13, 261.63]; // G4 F4 Eb4 C4
+        notas.forEach((freq, i) => {
+            setTimeout(() => this.tocarNota(freq, 0.3, 'sawtooth', 0.5), i * 160);
+        });
+    }
+
+    // Clique em botão
+    clique() {
+        this.tocarNota(880, 0.05, 'square', 0.4);
+        setTimeout(() => this.tocarNota(1320, 0.05, 'square', 0.3), 30);
+    }
+
+    // Hover/seleção
+    selecionar() {
+        this.tocarNota(660, 0.06, 'sine', 0.35);
+    }
+}
+
+const audio = new GerenciadorAudio();
+
+// ============ AJUSTE DE RESOLUÇÃO ============
+function redimensionar() {
+    const container = document.getElementById('gameContainer');
+    const rect = container.getBoundingClientRect();
+
+    const ratio = LARGURA / ALTURA;
+    let w = rect.width;
+    let h = rect.height;
+
+    if (w / h > ratio) {
+        w = h * ratio;
+    } else {
+        h = w / ratio;
+    }
+
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = LARGURA * dpr;
+    canvas.height = ALTURA * dpr;
+    canvas.style.width = w + 'px';
+    canvas.style.height = h + 'px';
+
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
+}
+
+window.addEventListener('resize', redimensionar);
+window.addEventListener('orientationchange', () => setTimeout(redimensionar, 100));
+redimensionar();
+
+// ============ CONVERSÃO DE COORDENADAS ============
+function obterPosicaoCanvas(evento) {
+    const rect = canvas.getBoundingClientRect();
+    let clientX, clientY;
+
+    if (evento.touches && evento.touches.length > 0) {
+        clientX = evento.touches[0].clientX;
+        clientY = evento.touches[0].clientY;
+    } else if (evento.changedTouches && evento.changedTouches.length > 0) {
+        clientX = evento.changedTouches[0].clientX;
+        clientY = evento.changedTouches[0].clientY;
+    } else {
+        clientX = evento.clientX;
+        clientY = evento.clientY;
+    }
+
+    const x = (clientX - rect.left) / rect.width * LARGURA;
+    const y = (clientY - rect.top) / rect.height * ALTURA;
+    return { x, y };
+}
+
+// ============ INPUT ============
+function moverRaquete(y) {
+    if (estado === Estado.JOGANDO) {
+        raqueteJogadorY = y - RAQUETE_ALTURA / 2;
+        raqueteJogadorY = Math.max(0, Math.min(ALTURA - RAQUETE_ALTURA, raqueteJogadorY));
+    }
+}
+
+function aoMover(e) {
+    const pos = obterPosicaoCanvas(e);
+    moverRaquete(pos.y);
+    if (e.cancelable) e.preventDefault();
+}
+
+function aoClicar(e) {
+    // Inicializa áudio no primeiro clique (obrigatório em mobile)
+    audio.init();
+
+    const pos = obterPosicaoCanvas(e);
+    const x = pos.x, y = pos.y;
+
+    switch (estado) {
+        case Estado.CAPA:
+            if (dentro(x, y, botaoIniciar)) {
+                audio.clique();
+                estado = Estado.SELECAO_DIFICULDADE;
+            }
+            break;
+
+        case Estado.SELECAO_DIFICULDADE:
+            for (const botao of botoesDificuldade) {
+                if (dentro(x, y, botao)) {
+                    audio.clique();
+                    dificuldadeAtual = DIFICULDADES[botao.nivel];
+                    iniciarJogo();
+                    break;
+                }
+            }
+            break;
+
+        case Estado.JOGANDO:
+            estado = Estado.PAUSADO;
+            audio.clique();
+            break;
+
+        case Estado.PAUSADO:
+            estado = Estado.JOGANDO;
+            audio.clique();
+            break;
+
+        case Estado.FIM_DE_JOGO:
+            audio.clique();
+            estado = Estado.SELECAO_DIFICULDADE;
+            break;
+    }
+
+    if (e.cancelable) e.preventDefault();
+}
+
+function dentro(x, y, r) {
+    return x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h;
+}
+
+// Mouse
+canvas.addEventListener('mousemove', aoMover);
+canvas.addEventListener('mousedown', aoClicar);
+
+// Touch
+canvas.addEventListener('touchstart', (e) => {
+    aoMover(e);
+    aoClicar(e);
+}, { passive: false });
+
+canvas.addEventListener('touchmove', (e) => {
+    aoMover(e);
+}, { passive: false });
+
+canvas.addEventListener('touchend', (e) => {
+    if (e.cancelable) e.preventDefault();
+}, { passive: false });
+
+canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+
+// ============ LÓGICA DO JOGO ============
+function reiniciarBola(direcao) {
+    bolaX = LARGURA / 2;
+    bolaY = ALTURA / 2;
+    velocidadeBase = dificuldadeAtual.velocidadeInicialBola;
+    velocidadeBolaX = velocidadeBase * direcao;
+    velocidadeBolaY = Math.random() * 6 - 3;
+    if (Math.abs(velocidadeBolaY) < 1) velocidadeBolaY = 2;
+
+    // Escolhe novo alvo "errado" para a CPU
+    const desvio = (Math.random() * 2 - 1) * dificuldadeAtual.erroCPU;
+    alvoCPUY = ALTURA / 2 + desvio;
+}
+
+function iniciarJogo() {
+    pontosJogador = 0;
+    pontosCPU = 0;
+    raqueteJogadorY = ALTURA / 2 - RAQUETE_ALTURA / 2;
+    raqueteCPUY = ALTURA / 2 - RAQUETE_ALTURA / 2;
+    reiniciarBola(-1);
+    estado = Estado.JOGANDO;
+}
+
+function verificarVencedor() {
+    if (pontosJogador >= PONTOS_PARA_VENCER) {
+        estado = Estado.FIM_DE_JOGO;
+        audio.vitoria();
+        return true;
+    }
+    if (pontosCPU >= PONTOS_PARA_VENCER) {
+        estado = Estado.FIM_DE_JOGO;
+        audio.derrota();
+        return true;
+    }
+    return false;
+}
+
+function atualizar() {
+    // Aceleração gradual conforme dificuldade
+    if (dificuldadeAtual.aceleracao > 0) {
+        const sinalX = Math.sign(velocidadeBolaX);
+        const velX = Math.abs(velocidadeBolaX) + dificuldadeAtual.aceleracao * 0.01;
+        velocidadeBolaX = sinalX * Math.min(velX, 14);
+    }
+
+    bolaX += velocidadeBolaX;
+    bolaY += velocidadeBolaY;
+
+    // Colisão topo/base
+    if (bolaY <= 0) {
+        bolaY = 0;
+        velocidadeBolaY = Math.abs(velocidadeBolaY);
+        audio.parede();
+    }
+    if (bolaY + BOLA_TAMANHO >= ALTURA) {
+        bolaY = ALTURA - BOLA_TAMANHO;
+        velocidadeBolaY = -Math.abs(velocidadeBolaY);
+        audio.parede();
+    }
+
+    // Colisão raquete do jogador (direita)
+    if (velocidadeBolaX > 0 &&
+        bolaX + BOLA_TAMANHO >= RAQUETE_JOGADOR_X &&
+        bolaX <= RAQUETE_JOGADOR_X + RAQUETE_LARGURA &&
+        bolaY + BOLA_TAMANHO >= raqueteJogadorY &&
+        bolaY <= raqueteJogadorY + RAQUETE_ALTURA) {
+
+        velocidadeBolaX = -velocidadeBolaX;
+        const centroRaquete = raqueteJogadorY + RAQUETE_ALTURA / 2;
+        const centroBola = bolaY + BOLA_TAMANHO / 2;
+        velocidadeBolaY += (centroBola - centroRaquete) / 15;
+        velocidadeBolaY = Math.max(-9, Math.min(9, velocidadeBolaY));
+        bolaX = RAQUETE_JOGADOR_X - BOLA_TAMANHO;
+        audio.rebater();
+    }
+
+    // Colisão raquete da CPU (esquerda)
+    if (velocidadeBolaX < 0 &&
+        bolaX <= RAQUETE_CPU_X + RAQUETE_LARGURA &&
+        bolaX + BOLA_TAMANHO >= RAQUETE_CPU_X &&
+        bolaY + BOLA_TAMANHO >= raqueteCPUY &&
+        bolaY <= raqueteCPUY + RAQUETE_ALTURA) {
+
+        velocidadeBolaX = -velocidadeBolaX;
+        const centroRaquete = raqueteCPUY + RAQUETE_ALTURA / 2;
+        const centroBola = bolaY + BOLA_TAMANHO / 2;
+        velocidadeBolaY += (centroBola - centroRaquete) / 15;
+        velocidadeBolaY = Math.max(-9, Math.min(9, velocidadeBolaY));
+        bolaX = RAQUETE_CPU_X + RAQUETE_LARGURA;
+        audio.rebater();
+    }
+
+    // IA da CPU com erro (dificuldade)
+    const centroRaqueteCPU = raqueteCPUY + RAQUETE_ALTURA / 2;
+    const centroBola = bolaY + BOLA_TAMANHO / 2;
+
+    // Alvo com "erro" (simula imperfeição)
+    const alvo = centroBola + (alvoCPUY - ALTURA / 2) * 0.3;
+    const velocidadeCPU = dificuldadeAtual.velocidadeCPU;
+
+    if (centroRaqueteCPU < alvo - 10) {
+        raqueteCPUY += velocidadeCPU;
+    } else if (centroRaqueteCPU > alvo + 10) {
+        raqueteCPUY -= velocidadeCPU;
+    }
+    raqueteCPUY = Math.max(0, Math.min(ALTURA - RAQUETE_ALTURA, raqueteCPUY));
+
+    // Ponto da CPU
+    if (bolaX > LARGURA) {
+        pontosCPU++;
+        if (!verificarVencedor()) {
+            audio.pontoCPU();
+            reiniciarBola(-1);
+        }
+    }
+
+    // Ponto do jogador
+    if (bolaX + BOLA_TAMANHO < 0) {
+        pontosJogador++;
+        if (!verificarVencedor()) {
+            audio.pontoJogador();
+            reiniciarBola(1);
+        }
+    }
+}
+
+// ============ DESENHO ============
+function desenharCapa() {
+    if (capaCarregada) {
+        const escala = Math.max(LARGURA / imagemCapa.width, ALTURA / imagemCapa.height);
+        const w = imagemCapa.width * escala;
+        const h = imagemCapa.height * escala;
+        const x = (LARGURA - w) / 2;
+        const y = (ALTURA - h) / 2;
+        ctx.drawImage(imagemCapa, x, y, w, h);
+    } else {
+        desenharCapaFallback();
+    }
+
+    ctx.fillStyle = 'rgba(0,0,0,0.35)';
+    ctx.fillRect(0, botaoIniciar.y - 40, LARGURA, botaoIniciar.h + 80);
+
+    desenharBotao(botaoIniciar, 'INICIAR', '#e61e1e', '#a00a0a', COR_AMARELO, 44);
+}
+
+function desenharBotao(b, texto, cor1, cor2, corBorda, tamanhoFonte) {
+    // Sombra
+    ctx.fillStyle = 'rgba(0,0,0,0.5)';
+    ctx.beginPath();
+    ctx.roundRect(b.x + 6, b.y + 8, b.w, b.h, 25);
+    ctx.fill();
+
+    // Gradiente
+    const grad = ctx.createLinearGradient(0, b.y, 0, b.y + b.h);
+    grad.addColorStop(0, cor1);
+    grad.addColorStop(1, cor2);
+    ctx.fillStyle = grad;
+    ctx.beginPath();
+    ctx.roundRect(b.x, b.y, b.w, b.h, 25);
+    ctx.fill();
+
+    // Borda
+    ctx.strokeStyle = corBorda;
+    ctx.lineWidth = 4;
+    ctx.beginPath();
+    ctx.roundRect(b.x, b.y, b.w, b.h, 25);
+    ctx.stroke();
+
+    // Texto
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.font = `bold ${tamanhoFonte}px "Arial Black", Arial, sans-serif`;
+    const tx = b.x + b.w / 2;
+    const ty = b.y + b.h / 2 + 2;
+
+    ctx.fillStyle = 'rgba(0,0,0,0.6)';
+    ctx.fillText(texto, tx + 2, ty + 2);
+    ctx.fillStyle = '#ffffff';
+    ctx.fillText(texto, tx, ty);
+}
+
+function desenharCapaFallback() {
+    const fundo = ctx.createLinearGradient(0, 0, 0, ALTURA);
+    fundo.addColorStop(0, '#1e3c82');
+    fundo.addColorStop(1, '#0a143c');
+    ctx.fillStyle = fundo;
+    ctx.fillRect(0, 0, LARGURA, ALTURA);
+
+    ctx.fillStyle = '#14285a';
+    ctx.beginPath();
+    ctx.roundRect(150, 350, 600, 180, 20);
+    ctx.fill();
+
+    ctx.strokeStyle = '#ffffff';
+    ctx.lineWidth = 2;
+    for (let x = 300; x < 600; x += 8) {
+        ctx.beginPath();
+        ctx.moveTo(x, 350);
+        ctx.lineTo(x, 530);
+        ctx.stroke();
+    }
+
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = COR_AMARELO;
+    ctx.font = 'bold 62px "Arial Black", Arial, sans-serif';
+    ctx.fillText('TÊNIS DE MESA', LARGURA / 2, 130);
+
+    ctx.fillStyle = '#ffffff';
+    ctx.font = 'bold 78px "Arial Black", Arial, sans-serif';
+    ctx.fillText('PRO!', LARGURA / 2, 215);
+}
+
+function desenharSelecaoDificuldade() {
+    // Fundo
+    const fundo = ctx.createLinearGradient(0, 0, 0, ALTURA);
+    fundo.addColorStop(0, '#1e3c82');
+    fundo.addColorStop(1, '#0a143c');
+    ctx.fillStyle = fundo;
+    ctx.fillRect(0, 0, LARGURA, ALTURA);
+
+    // Título
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = COR_AMARELO;
+    ctx.font = 'bold 48px "Arial Black", Arial, sans-serif';
+    ctx.fillText('ESCOLHA A DIFICULDADE', LARGURA / 2, 120);
+
+    ctx.fillStyle = '#cccccc';
+    ctx.font = '20px Arial, sans-serif';
+    ctx.fillText('Primeiro a 5 pontos vence!', LARGURA / 2, 170);
+
+    // Cartões
+    for (const botao of botoesDificuldade) {
+        const dif = DIFICULDADES[botao.nivel];
+
+        // Fundo do cartão
+        const grad = ctx.createLinearGradient(0, botao.y, 0, botao.y + botao.h);
+        grad.addColorStop(0, 'rgba(255,255,255,0.1)');
+        grad.addColorStop(1, 'rgba(0,0,0,0.3)');
+        ctx.fillStyle = grad;
+        ctx.beginPath();
+        ctx.roundRect(botao.x, botao.y, botao.w, botao.h, 20);
+        ctx.fill();
+
+        // Borda colorida
+        ctx.strokeStyle = dif.cor;
+        ctx.lineWidth = 4;
+        ctx.beginPath();
+        ctx.roundRect(botao.x, botao.y, botao.w, botao.h, 20);
+        ctx.stroke();
+
+        // Emoji
+        ctx.font = '56px Arial, sans-serif';
+        ctx.fillStyle = '#ffffff';
+        ctx.fillText(dif.emoji, botao.x + botao.w / 2, botao.y + 55);
+
+        // Nome
+        ctx.font = 'bold 28px "Arial Black", Arial, sans-serif';
+        ctx.fillStyle = dif.cor;
+        ctx.fillText(dif.nome, botao.x + botao.w / 2, botao.y + 105);
+
+        // Descrição
+        ctx.font = '14px Arial, sans-serif';
+        ctx.fillStyle = '#dddddd';
+        ctx.fillText(dif.descricao, botao.x + botao.w / 2, botao.y + 135);
+    }
+
+    // Botão voltar
+    ctx.fillStyle = '#666';
+    ctx.font = '18px Arial, sans-serif';
+    ctx.fillText('Clique em INICIAR → escolha a dificuldade → jogue!', LARGURA / 2, ALTURA - 40);
+}
+
+function desenharJogo() {
+    const fundo = ctx.createLinearGradient(0, 0, 0, ALTURA);
+    fundo.addColorStop(0, '#1e3c82');
+    fundo.addColorStop(1, '#0a143c');
+    ctx.fillStyle = fundo;
+    ctx.fillRect(0, 0, LARGURA, ALTURA);
+
+    ctx.fillStyle = '#b46432';
+    ctx.fillRect(0, ALTURA - 80, LARGURA, 80);
+
+    ctx.strokeStyle = 'rgba(255,255,255,0.4)';
+    ctx.lineWidth = 3;
+    ctx.setLineDash([15, 15]);
+    ctx.beginPath();
+    ctx.moveTo(LARGURA / 2, 0);
+    ctx.lineTo(LARGURA / 2, ALTURA);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    // Raquete México
+    ctx.fillStyle = COR_MEXICO;
+    ctx.beginPath();
+    ctx.roundRect(RAQUETE_CPU_X, raqueteCPUY, RAQUETE_LARGURA, RAQUETE_ALTURA, 8);
+    ctx.fill();
+
+    // Raquete Brasil
+    ctx.fillStyle = COR_BRASIL;
+    ctx.beginPath();
+    ctx.roundRect(RAQUETE_JOGADOR_X, raqueteJogadorY, RAQUETE_LARGURA, RAQUETE_ALTURA, 8);
+    ctx.fill();
+
+    ctx.strokeStyle = COR_AMARELO;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.roundRect(RAQUETE_JOGADOR_X, raqueteJogadorY, RAQUETE_LARGURA, RAQUETE_ALTURA, 8);
+    ctx.stroke();
+
+    // Bola
+    const grad = ctx.createRadialGradient(
+        bolaX + BOLA_TAMANHO / 2, bolaY + BOLA_TAMANHO / 2, 2,
+        bolaX + BOLA_TAMANHO / 2, bolaY + BOLA_TAMANHO / 2, BOLA_TAMANHO
+    );
+    grad.addColorStop(0, '#ffffff');
+    grad.addColorStop(1, '#cfcfcf');
+    ctx.fillStyle = grad;
+    ctx.beginPath();
+    ctx.arc(bolaX + BOLA_TAMANHO / 2, bolaY + BOLA_TAMANHO / 2, BOLA_TAMANHO / 2, 0, Math.PI * 2);
+    ctx.fill();
+
+    desenharPlacar();
+    desenharIndicadorDificuldade();
+}
+
+function desenharIndicadorDificuldade() {
+    // Canto superior direito
+    ctx.textAlign = 'right';
+    ctx.textBaseline = 'middle';
+
+    const dif = dificuldadeAtual;
+    ctx.fillStyle = 'rgba(0,0,0,0.5)';
+    ctx.beginPath();
+    ctx.roundRect(LARGURA - 180, 15, 165, 40, 12);
+    ctx.fill();
+
+    ctx.strokeStyle = dif.cor;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.roundRect(LARGURA - 180, 15, 165, 40, 12);
+    ctx.stroke();
+
+    ctx.font = 'bold 18px "Arial Black", Arial, sans-serif';
+    ctx.fillStyle = dif.cor;
+    ctx.fillText(`${dif.emoji} ${dif.nome}`, LARGURA - 25, 35);
+}
+
+function desenharPlacar() {
+    const cx = LARGURA / 2;
+    const py = 50;
+
+    ctx.fillStyle = 'rgba(0,0,0,0.65)';
+    ctx.beginPath();
+    ctx.roundRect(cx - 120, 10, 240, 80, 20);
+    ctx.fill();
+
+    ctx.strokeStyle = COR_AMARELO;
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.roundRect(cx - 120, 10, 240, 80, 20);
+    ctx.stroke();
+
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+
+    ctx.font = 'bold 44px "Arial Black", Arial, sans-serif';
+    ctx.fillStyle = '#22c55e';
+    ctx.fillText(pontosCPU, cx - 70, py);
+
+    ctx.fillStyle = '#ffffff';
+    ctx.font = 'bold 28px Arial, sans-serif';
+    ctx.fillText('×', cx, py - 5);
+
+    ctx.font = 'bold 44px "Arial Black", Arial, sans-serif';
+    ctx.fillStyle = '#22c55e';
+    ctx.fillText(pontosJogador, cx + 70, py);
+
+    ctx.font = 'bold 12px Arial, sans-serif';
+    ctx.fillStyle = '#cccccc';
+    ctx.fillText('MÉX', cx - 90, py + 42);
+    ctx.fillText('BRA', cx + 90, py + 42);
+}
+
+function desenharOverlay(titulo, subtitulo, corTitulo) {
+    ctx.fillStyle = 'rgba(0,0,0,0.8)';
+    ctx.fillRect(0, 0, LARGURA, ALTURA);
+
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+
+    ctx.fillStyle = corTitulo || '#ffffff';
+    ctx.font = 'bold 52px "Arial Black", Arial, sans-serif';
+    ctx.fillText(titulo, LARGURA / 2, ALTURA / 2 - 40);
+
+    ctx.fillStyle = '#cccccc';
+    ctx.font = '24px Arial, sans-serif';
+    ctx.fillText(subtitulo, LARGURA / 2, ALTURA / 2 + 20);
+}
+
+function desenharFimDeJogo() {
+    const venceu = pontosJogador > pontosCPU;
+
+    ctx.fillStyle = 'rgba(0,0,0,0.85)';
+    ctx.fillRect(0, 0, LARGURA, ALTURA);
+
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+
+    // Troféu/emoji
+    ctx.font = '90px Arial, sans-serif';
+    ctx.fillText(venceu ? '🏆' : '💪', LARGURA / 2, ALTURA / 2 - 120);
+
+    // Título
+    ctx.fillStyle = venceu ? COR_BRASIL : COR_MEXICO;
+    ctx.font = 'bold 56px "Arial Black", Arial, sans-serif';
+    ctx.fillText(venceu ? '🇧🇷 BRASIL VENCEU!' : '🇲🇽 MÉXICO VENCEU!', LARGURA / 2, ALTURA / 2 - 20);
+
+    // Placar final
+    ctx.fillStyle = '#ffffff';
+    ctx.font = 'bold 36px "Arial Black", Arial, sans-serif';
+    ctx.fillText(`${pontosJogador} × ${pontosCPU}`, LARGURA / 2, ALTURA / 2 + 50);
+
+    // Dificuldade
+    ctx.fillStyle = dificuldadeAtual.cor;
+    ctx.font = 'bold 20px Arial, sans-serif';
+    ctx.fillText(`Dificuldade: ${dificuldadeAtual.emoji} ${dificuldadeAtual.nome}`, LARGURA / 2, ALTURA / 2 + 100);
+
+    // Instrução
+    ctx.fillStyle = '#cccccc';
+    ctx.font = '20px Arial, sans-serif';
+    ctx.fillText('Clique ou toque para jogar novamente', LARGURA / 2, ALTURA / 2 + 160);
+}
+
+function desenhar() {
+    ctx.clearRect(0, 0, LARGURA, ALTURA);
+
+    switch (estado) {
+        case Estado.CAPA:
+            desenharCapa();
+            break;
+        case Estado.SELECAO_DIFICULDADE:
+            desenharSelecaoDificuldade();
+            break;
+        case Estado.JOGANDO:
+            desenharJogo();
+            break;
+        case Estado.PAUSADO:
+            desenharJogo();
+            desenharOverlay('PAUSADO', 'Clique ou toque para continuar');
+            break;
+        case Estado.FIM_DE_JOGO:
+            desenharJogo();
+            desenharFimDeJogo();
+            break;
+    }
+}
+
+// ============ POLYFILL roundRect ============
+if (!CanvasRenderingContext2D.prototype.roundRect) {
+    CanvasRenderingContext2D.prototype.roundRect = function(x, y, w, h, r) {
+        if (w < 2 * r) r = w / 2;
+        if (h < 2 * r) r = h / 2;
+        this.moveTo(x + r, y);
+        this.arcTo(x + w, y, x + w, y + h, r);
+        this.arcTo(x + w, y + h, x, y + h, r);
+        this.arcTo(x, y + h, x, y, r);
+        this.arcTo(x, y, x + w, y, r);
+        this.closePath();
+        return this;
+    };
+}
+
+// ============ LOOP PRINCIPAL ============
+let ultimoTempo = 0;
+const INTERVALO = 1000 / 60;
+
+function loop(tempoAtual) {
+    const delta = tempoAtual - ultimoTempo;
+
+    if (delta >= INTERVALO) {
+        ultimoTempo = tempoAtual - (delta % INTERVALO);
+        if (estado === Estado.JOGANDO) {
+            atualizar();
+        }
+        desenhar();
+    }
+
+    requestAnimationFrame(loop);
+}
+
+requestAnimationFrame(loop);
+
+console.log('🏓 Tênis de Mesa PRO! carregado com sons e dificuldades.');
+</script>
+</body>
+</html>
